@@ -62,6 +62,7 @@ export const useLiveSession = () => {
     
     setVolume(0);
     setConnectionState('disconnected');
+    nextStartTimeRef.current = 0;
   }, []);
 
   const connect = useCallback(async () => {
@@ -71,18 +72,30 @@ export const useLiveSession = () => {
 
       const apiKey = process.env.API_KEY;
       if (!apiKey) {
-        throw new Error("API Key not found");
+        throw new Error("API Key not found in environment variables");
       }
 
-      const ai = new GoogleGenAI({ apiKey });
+      // 1. Get Microphone Access first to fail early if denied
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        streamRef.current = stream;
+      } catch (err) {
+        console.error("Microphone access error:", err);
+        throw new Error("Microphone access denied. Please grant permission to use the microphone.");
+      }
 
-      // Initialize Audio Contexts
+      // 2. Initialize Audio Contexts
       // Output: 24kHz for Gemini responses
       const outputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-      audioContextRef.current = outputCtx;
-      
       // Input: 16kHz for User Mic
       const inputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
+      
+      // Explicitly resume contexts to handle browser autoplay policies
+      await outputCtx.resume();
+      await inputCtx.resume();
+
+      audioContextRef.current = outputCtx;
       inputContextRef.current = inputCtx;
 
       // Setup Analyzer for visualizer
@@ -105,9 +118,8 @@ export const useLiveSession = () => {
       };
       updateVolume();
 
-      // Get Microphone
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = stream;
+      // 3. Initialize GenAI Client
+      const ai = new GoogleGenAI({ apiKey });
 
       const now = new Date();
       const systemInstruction = `
@@ -116,15 +128,16 @@ export const useLiveSession = () => {
         Current Session Time: ${now.toLocaleTimeString()}.
         
         Your instructions:
-        1. When the session starts, immediately greet the user warmly.
-        2. Announce the current time clearly based on the Session Time provided above.
-        3. Then, share a fascinating, brief historical event that happened on this day (${now.toLocaleString('default', { month: 'long' })} ${now.getDate()}) in history.
+        1. When the session starts, immediately greet the user warmly with the time.
+        2. Example greeting: "Greetings. The time is [Current Time]."
+        3. Immediately follow the time with a fascinating, brief historical event that happened on this day (${now.toLocaleString('default', { month: 'long' })} ${now.getDate()}) in history.
         4. Engage in conversation if the user asks questions about the event or time.
         5. If asked for the time again, recite it.
         6. Keep your tone elegant, slightly archaic but accessible, like a museum curator.
+        7. Keep responses concise suitable for spoken conversation.
       `;
 
-      // Connect to Live API
+      // 4. Connect to Live API
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-09-2025',
         config: {
@@ -200,21 +213,22 @@ export const useLiveSession = () => {
             }
           },
           onclose: () => {
+            console.log("Session closed");
             cleanup();
           },
           onerror: (err) => {
             console.error("Session error", err);
-            setErrorMsg("Connection error occurred.");
+            setErrorMsg("Connection to Gemini Live API failed.");
             cleanup();
           }
         }
       });
       sessionPromiseRef.current = sessionPromise;
 
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
       setConnectionState('error');
-      setErrorMsg("Failed to connect. Please check microphone permissions.");
+      setErrorMsg(e.message || "Failed to connect.");
       cleanup();
     }
   }, [cleanup]);

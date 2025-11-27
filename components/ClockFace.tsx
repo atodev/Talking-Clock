@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
 
 export const ClockFace: React.FC = () => {
-  const [time, setTime] = useState(new Date());
+  const [time, setTime] = useState<Date | null>(null);
 
   useEffect(() => {
+    setTime(new Date());
     const timer = setInterval(() => setTime(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
@@ -31,12 +32,12 @@ export const ClockFace: React.FC = () => {
       <div className="text-history-gold font-serif text-lg tracking-widest mb-2 uppercase opacity-80">
         Current Time
       </div>
-      <div className="text-6xl md:text-8xl font-sans font-light text-white tabular-nums tracking-tighter mb-4 shadow-black drop-shadow-md">
-        {formatTime(time)}
+      <div className="text-6xl md:text-8xl font-sans font-light text-white tabular-nums tracking-tighter mb-4 shadow-black drop-shadow-md min-h-[96px]">
+        {time ? formatTime(time) : <span className="opacity-0">00:00:00 AM</span>}
       </div>
       <div className="w-full h-px bg-gradient-to-r from-transparent via-history-gold to-transparent opacity-50 mb-4"></div>
-      <div className="text-gray-400 font-serif text-xl md:text-2xl text-center">
-        {formatDate(time)}
+      <div className="text-gray-400 font-serif text-xl md:text-2xl text-center min-h-[32px]">
+        {time ? formatDate(time) : <span className="opacity-0">Loading...</span>}
       </div>
     </div>
   );
