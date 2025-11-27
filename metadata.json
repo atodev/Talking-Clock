@@ -1,0 +1,7 @@
+{
+  "name": "ChronoVoice: Historic Talking Clock",
+  "description": "A conversational talking clock that tells you the time and a historical event from this day using Gemini Live API.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
