@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
+import { GoogleGenAI, LiveServerMessage } from '@google/genai';
 import { base64ToUint8Array, decodeAudioData, createPcmBlob } from '../utils/audioUtils';
 import { ConnectionState } from '../types';
 
@@ -11,7 +11,7 @@ export const useLiveSession = () => {
   const nextStartTimeRef = useRef<number>(0);
   const audioContextRef = useRef<AudioContext | null>(null);
   const inputContextRef = useRef<AudioContext | null>(null);
-  const sessionPromiseRef = useRef<Promise<any> | null>(null);
+  const sessionRef = useRef<any>(null);
   const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const streamRef = useRef<MediaStream | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
@@ -19,6 +19,7 @@ export const useLiveSession = () => {
   const animationFrameRef = useRef<number | null>(null);
 
   const cleanup = useCallback(() => {
+    console.log("Cleaning up session...");
     // Stop all playing sources
     sourcesRef.current.forEach(source => {
       try { source.stop(); } catch (e) {}
@@ -48,11 +49,14 @@ export const useLiveSession = () => {
     }
 
     // Close Session
-    if (sessionPromiseRef.current) {
-       sessionPromiseRef.current.then(session => {
-         try { session.close(); } catch(e) { console.error("Error closing session", e)}
-       });
-       sessionPromiseRef.current = null;
+    if (sessionRef.current) {
+       try { 
+         sessionRef.current.close(); 
+         console.log("Session closed explicitly");
+       } catch(e) { 
+         console.error("Error closing session", e);
+       }
+       sessionRef.current = null;
     }
 
     if (animationFrameRef.current) {
@@ -138,10 +142,11 @@ export const useLiveSession = () => {
       `;
 
       // 4. Connect to Live API
+      // Use string literal 'AUDIO' to avoid runtime enum import issues
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-09-2025',
         config: {
-          responseModalities: [Modality.AUDIO],
+          responseModalities: ['AUDIO'] as any, 
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Fenrir' } },
           },
@@ -149,6 +154,7 @@ export const useLiveSession = () => {
         },
         callbacks: {
           onopen: () => {
+            console.log("Live API Session Opened");
             setConnectionState('connected');
             
             // Setup Mic Streaming
@@ -161,13 +167,14 @@ export const useLiveSession = () => {
             processor.onaudioprocess = (e) => {
               const inputData = e.inputBuffer.getChannelData(0);
               const pcmBlob = createPcmBlob(inputData);
-              sessionPromise.then(session => {
+              // Use the ref to the session, ensuring it exists
+              if (sessionRef.current) {
                   try {
-                    session.sendRealtimeInput({ media: pcmBlob });
+                    sessionRef.current.sendRealtimeInput({ media: pcmBlob });
                   } catch(err) {
                     console.error("Error sending audio", err);
                   }
-              });
+              }
             };
 
             source.connect(processor);
@@ -213,7 +220,7 @@ export const useLiveSession = () => {
             }
           },
           onclose: () => {
-            console.log("Session closed");
+            console.log("Session closed from server side");
             cleanup();
           },
           onerror: (err) => {
@@ -223,10 +230,13 @@ export const useLiveSession = () => {
           }
         }
       });
-      sessionPromiseRef.current = sessionPromise;
+
+      // Await the session to catch immediate connection errors (auth, 404, etc)
+      const session = await sessionPromise;
+      sessionRef.current = session;
 
     } catch (e: any) {
-      console.error(e);
+      console.error("Connection failed:", e);
       setConnectionState('error');
       setErrorMsg(e.message || "Failed to connect.");
       cleanup();
