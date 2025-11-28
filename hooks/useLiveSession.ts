@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { GoogleGenAI, LiveServerMessage } from '@google/genai';
+import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
 import { base64ToUint8Array, decodeAudioData, createPcmBlob } from '../utils/audioUtils';
 import { ConnectionState } from '../types';
 
@@ -11,7 +11,7 @@ export const useLiveSession = () => {
   const nextStartTimeRef = useRef<number>(0);
   const audioContextRef = useRef<AudioContext | null>(null);
   const inputContextRef = useRef<AudioContext | null>(null);
-  const sessionRef = useRef<any>(null);
+  const sessionPromiseRef = useRef<Promise<any> | null>(null);
   const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const streamRef = useRef<MediaStream | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
@@ -19,7 +19,6 @@ export const useLiveSession = () => {
   const animationFrameRef = useRef<number | null>(null);
 
   const cleanup = useCallback(() => {
-    console.log("Cleaning up session...");
     // Stop all playing sources
     sourcesRef.current.forEach(source => {
       try { source.stop(); } catch (e) {}
@@ -28,11 +27,11 @@ export const useLiveSession = () => {
 
     // Close Audio Contexts
     if (audioContextRef.current) {
-      audioContextRef.current.close();
+      try { audioContextRef.current.close(); } catch(e) {}
       audioContextRef.current = null;
     }
     if (inputContextRef.current) {
-      inputContextRef.current.close();
+      try { inputContextRef.current.close(); } catch(e) {}
       inputContextRef.current = null;
     }
 
@@ -44,19 +43,16 @@ export const useLiveSession = () => {
 
     // Stop Processor
     if (processorRef.current) {
-      processorRef.current.disconnect();
+      try { processorRef.current.disconnect(); } catch(e) {}
       processorRef.current = null;
     }
 
     // Close Session
-    if (sessionRef.current) {
-       try { 
-         sessionRef.current.close(); 
-         console.log("Session closed explicitly");
-       } catch(e) { 
-         console.error("Error closing session", e);
-       }
-       sessionRef.current = null;
+    if (sessionPromiseRef.current) {
+       sessionPromiseRef.current.then(session => {
+         try { session.close(); } catch(e) { console.error("Error closing session", e)}
+       });
+       sessionPromiseRef.current = null;
     }
 
     if (animationFrameRef.current) {
@@ -74,12 +70,45 @@ export const useLiveSession = () => {
       setConnectionState('connecting');
       setErrorMsg(null);
 
-      const apiKey = process.env.API_KEY;
-      if (!apiKey) {
-        throw new Error("API Key not found in environment variables");
+      // 0. Handle API Key Selection (for AI Studio environment)
+      if (typeof window !== 'undefined' && (window as any).aistudio) {
+        const aistudio = (window as any).aistudio;
+        try {
+            const hasKey = await aistudio.hasSelectedApiKey();
+            if (!hasKey) {
+                await aistudio.openSelectKey();
+            }
+        } catch (err) {
+            console.warn("AI Studio key selection helpers failed, proceeding to check process.env", err);
+        }
       }
 
-      // 1. Get Microphone Access first to fail early if denied
+      // 1. Validate API Key with robust fallback for local dev
+      let apiKey = process.env.API_KEY;
+
+      // Check for common local environment variable patterns if primary is missing
+      if (!apiKey) {
+        try {
+           // Check for REACT_APP_ (Create React App) or NEXT_PUBLIC_ (Next.js)
+           if (typeof process !== 'undefined' && process.env) {
+              apiKey = (process.env as any).REACT_APP_API_KEY || (process.env as any).NEXT_PUBLIC_API_KEY;
+           }
+           // Check for VITE_ (Vite)
+           if (!apiKey && typeof import.meta !== 'undefined' && (import.meta as any).env) {
+              apiKey = (import.meta as any).env.VITE_API_KEY;
+           }
+        } catch (e) {
+           console.warn("Error checking fallback env vars", e);
+        }
+      }
+
+      if (!apiKey) {
+        throw new Error(
+          "API Key not found. If using .env.local, please ensure your variable is named correctly (e.g., REACT_APP_API_KEY, NEXT_PUBLIC_API_KEY, or VITE_API_KEY) and the server has been restarted."
+        );
+      }
+
+      // 2. Get Microphone Access
       let stream: MediaStream;
       try {
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -89,7 +118,7 @@ export const useLiveSession = () => {
         throw new Error("Microphone access denied. Please grant permission to use the microphone.");
       }
 
-      // 2. Initialize Audio Contexts
+      // 3. Initialize Audio Contexts
       // Output: 24kHz for Gemini responses
       const outputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
       // Input: 16kHz for User Mic
@@ -122,7 +151,7 @@ export const useLiveSession = () => {
       };
       updateVolume();
 
-      // 3. Initialize GenAI Client
+      // 4. Initialize GenAI Client
       const ai = new GoogleGenAI({ apiKey });
 
       const now = new Date();
@@ -141,12 +170,11 @@ export const useLiveSession = () => {
         7. Keep responses concise suitable for spoken conversation.
       `;
 
-      // 4. Connect to Live API
-      // Use string literal 'AUDIO' to avoid runtime enum import issues
+      // 5. Connect to Live API
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-09-2025',
         config: {
-          responseModalities: ['AUDIO'] as any, 
+          responseModalities: [Modality.AUDIO],
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Fenrir' } },
           },
@@ -154,7 +182,6 @@ export const useLiveSession = () => {
         },
         callbacks: {
           onopen: () => {
-            console.log("Live API Session Opened");
             setConnectionState('connected');
             
             // Setup Mic Streaming
@@ -167,14 +194,13 @@ export const useLiveSession = () => {
             processor.onaudioprocess = (e) => {
               const inputData = e.inputBuffer.getChannelData(0);
               const pcmBlob = createPcmBlob(inputData);
-              // Use the ref to the session, ensuring it exists
-              if (sessionRef.current) {
+              sessionPromise.then(session => {
                   try {
-                    sessionRef.current.sendRealtimeInput({ media: pcmBlob });
+                    session.sendRealtimeInput({ media: pcmBlob });
                   } catch(err) {
                     console.error("Error sending audio", err);
                   }
-              }
+              });
             };
 
             source.connect(processor);
@@ -220,7 +246,7 @@ export const useLiveSession = () => {
             }
           },
           onclose: () => {
-            console.log("Session closed from server side");
+            console.log("Session closed");
             cleanup();
           },
           onerror: (err) => {
@@ -230,13 +256,10 @@ export const useLiveSession = () => {
           }
         }
       });
-
-      // Await the session to catch immediate connection errors (auth, 404, etc)
-      const session = await sessionPromise;
-      sessionRef.current = session;
+      sessionPromiseRef.current = sessionPromise;
 
     } catch (e: any) {
-      console.error("Connection failed:", e);
+      console.error(e);
       setConnectionState('error');
       setErrorMsg(e.message || "Failed to connect.");
       cleanup();

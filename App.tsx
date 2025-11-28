@@ -32,7 +32,7 @@ const App: React.FC = () => {
           
           {/* Status Overlay */}
           <div className="absolute top-2 right-2 flex items-center gap-2">
-            <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : isConnecting ? 'bg-yellow-500' : connectionState === 'error' ? 'bg-red-500' : 'bg-gray-500'}`} />
+            <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : isConnecting ? 'bg-yellow-500' : 'bg-red-500'}`} />
             <span className="text-xs text-gray-500 uppercase tracking-widest font-semibold">
               {connectionState}
             </span>
@@ -42,9 +42,9 @@ const App: React.FC = () => {
         {/* Controls */}
         <div className="flex flex-col items-center gap-4">
           {errorMsg && (
-            <div className="flex items-center gap-3 text-red-300 bg-red-900/40 px-6 py-4 rounded-xl text-sm border border-red-800/50 max-w-md animate-in fade-in slide-in-from-bottom-2">
-              <AlertCircle size={20} className="shrink-0" />
-              <p className="font-medium">{errorMsg}</p>
+            <div className="flex items-center gap-2 text-red-400 bg-red-900/20 px-4 py-2 rounded-lg text-sm border border-red-900/50">
+              <AlertCircle size={16} />
+              {errorMsg}
             </div>
           )}
 
@@ -58,7 +58,6 @@ const App: React.FC = () => {
                 : 'bg-history-gold hover:bg-[#D4B06A] text-history-dark border border-yellow-600'
               }
               ${isConnecting ? 'opacity-70 cursor-wait' : 'shadow-lg hover:shadow-xl hover:scale-105 active:scale-95'}
-              disabled:cursor-not-allowed
             `}
           >
             {isConnected ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}

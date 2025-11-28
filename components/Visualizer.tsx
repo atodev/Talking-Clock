@@ -3,6 +3,13 @@ import { AudioVisualizerProps } from '../types';
 
 export const Visualizer: React.FC<AudioVisualizerProps> = ({ isPlaying, volume }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const volumeRef = useRef(volume);
+
+  // Keep volume ref in sync to read it inside the animation loop
+  // without re-triggering the main effect.
+  useEffect(() => {
+    volumeRef.current = volume;
+  }, [volume]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -25,8 +32,9 @@ export const Visualizer: React.FC<AudioVisualizerProps> = ({ isPlaying, volume }
       const centerX = canvas.width / 2;
       const centerY = canvas.height / 2;
       
+      const currentVolume = volumeRef.current;
       // If not playing, draw a flat line
-      const activeVolume = isPlaying ? Math.max(0.1, volume * 3) : 0.05;
+      const activeVolume = isPlaying ? Math.max(0.1, currentVolume * 3) : 0.05;
       
       ctx.beginPath();
       ctx.strokeStyle = '#C5A059'; // History Gold
@@ -66,7 +74,7 @@ export const Visualizer: React.FC<AudioVisualizerProps> = ({ isPlaying, volume }
     draw();
 
     return () => cancelAnimationFrame(animationId);
-  }, [isPlaying, volume]);
+  }, [isPlaying]);
 
   return (
     <canvas ref={canvasRef} className="w-full h-32 rounded-xl bg-black/20" />
