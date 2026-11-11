@@ -1,13 +1,37 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { ClockFace } from './components/ClockFace';
 import { Visualizer } from './components/Visualizer';
 import { useLiveSession } from './hooks/useLiveSession';
-import { Mic, MicOff, AlertCircle } from 'lucide-react';
+import { Mic, MicOff, AlertCircle, KeyRound } from 'lucide-react';
+
+// The passcode is remembered in this browser so it only has to be typed once
+const PASSCODE_KEY = 'chronovoice-passcode';
+const readSavedPasscode = () => {
+  try { return localStorage.getItem(PASSCODE_KEY) ?? ''; } catch { return ''; }
+};
+const savePasscode = (value: string) => {
+  try {
+    if (value) localStorage.setItem(PASSCODE_KEY, value);
+    else localStorage.removeItem(PASSCODE_KEY);
+  } catch { /* storage unavailable (e.g. private window); just don't remember it */ }
+};
 
 const App: React.FC = () => {
-  const { connectionState, volume, errorMsg, connect, disconnect } = useLiveSession();
+  const { connectionState, volume, errorMsg, passcodeRequired, connect, disconnect } = useLiveSession();
   const isConnected = connectionState === 'connected';
   const isConnecting = connectionState === 'connecting';
+  const [passcode, setPasscode] = useState(readSavedPasscode);
+
+  // Remember the passcode once it has worked
+  useEffect(() => {
+    if (isConnected) savePasscode(passcode);
+  }, [isConnected, passcode]);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isConnected) disconnect();
+    else if (!isConnecting) connect(passcode.trim());
+  };
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-4 bg-history-dark bg-[url('https://www.transparenttextures.com/patterns/cubes.png')]">
@@ -40,7 +64,7 @@ const App: React.FC = () => {
         </div>
 
         {/* Controls */}
-        <div className="flex flex-col items-center gap-4">
+        <form onSubmit={handleSubmit} className="flex flex-col items-center gap-4">
           {errorMsg && (
             <div className="flex items-center gap-2 text-red-400 bg-red-900/20 px-4 py-2 rounded-lg text-sm border border-red-900/50">
               <AlertCircle size={16} />
@@ -48,8 +72,24 @@ const App: React.FC = () => {
             </div>
           )}
 
+          {passcodeRequired && !isConnected && (
+            <label className="flex items-center gap-2 bg-history-panel border border-gray-700 rounded-full px-4 py-2 focus-within:border-history-gold">
+              <KeyRound size={16} className="text-gray-400" />
+              <span className="sr-only">Passcode</span>
+              <input
+                type="password"
+                autoComplete="current-password"
+                autoFocus
+                placeholder="Passcode"
+                value={passcode}
+                onChange={(e) => setPasscode(e.target.value)}
+                className="bg-transparent outline-none text-gray-100 placeholder-gray-500 w-48 font-sans"
+              />
+            </label>
+          )}
+
           <button
-            onClick={isConnected ? disconnect : connect}
+            type="submit"
             disabled={isConnecting}
             className={`
               group relative flex items-center gap-3 px-8 py-4 rounded-full font-serif text-lg transition-all duration-300
@@ -70,7 +110,7 @@ const App: React.FC = () => {
             Connect to hear the current time and a historical event from this day.
             Speak to ask questions.
           </p>
-        </div>
+        </form>
 
       </div>
     </div>
