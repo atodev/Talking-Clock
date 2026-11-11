@@ -3,6 +3,32 @@ import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
 import { base64ToUint8Array, decodeAudioData, createPcmBlob } from '../utils/audioUtils';
 import { ConnectionState } from '../types';
 
+// Ask our server for a single-use Gemini Live token
+// Thrown when the server wants a (correct) passcode before starting a session
+export class PasscodeError extends Error {}
+
+const fetchSessionToken = async (passcode: string): Promise<{ token: string; model: string }> => {
+  let res: Response;
+  try {
+    // Send our time zone so Chronos can tell the local time
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    res = await fetch(`/api/token?tz=${encodeURIComponent(tz)}`, {
+      cache: 'no-store',
+      headers: passcode ? { 'x-app-passcode': passcode } : {},
+    });
+  } catch {
+    throw new Error("Couldn't reach the server to start a session. Check your connection.");
+  }
+  const body = await res.json().catch(() => ({}));
+  if (res.status === 401 && body.passcodeRequired) {
+    throw new PasscodeError(body.error || 'Enter the passcode to connect.');
+  }
+  if (!res.ok || !body.token) {
+    throw new Error(body.error || `The server couldn't start a session (HTTP ${res.status}).`);
+  }
+  return body;
+};
+
 // Turn a getUserMedia error into a message that says what to do about it
 const describeMicError = (err: any): string => {
   switch (err?.name) {
@@ -24,6 +50,7 @@ export const useLiveSession = () => {
   const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected');
   const [volume, setVolume] = useState(0);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [passcodeRequired, setPasscodeRequired] = useState(false);
 
   const nextStartTimeRef = useRef<number>(0);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -82,48 +109,10 @@ export const useLiveSession = () => {
     nextStartTimeRef.current = 0;
   }, []);
 
-  const connect = useCallback(async () => {
+  const connect = useCallback(async (passcode = '') => {
     try {
       setConnectionState('connecting');
       setErrorMsg(null);
-
-      // 0. Handle API Key Selection (for AI Studio environment)
-      if (typeof window !== 'undefined' && (window as any).aistudio) {
-        const aistudio = (window as any).aistudio;
-        try {
-            const hasKey = await aistudio.hasSelectedApiKey();
-            if (!hasKey) {
-                await aistudio.openSelectKey();
-            }
-        } catch (err) {
-            console.warn("AI Studio key selection helpers failed, proceeding to check process.env", err);
-        }
-      }
-
-      // 1. Validate API Key with robust fallback for local dev
-      let apiKey = process.env.API_KEY;
-
-      // Check for common local environment variable patterns if primary is missing
-      if (!apiKey) {
-        try {
-           // Check for REACT_APP_ (Create React App) or NEXT_PUBLIC_ (Next.js)
-           if (typeof process !== 'undefined' && process.env) {
-              apiKey = (process.env as any).REACT_APP_API_KEY || (process.env as any).NEXT_PUBLIC_API_KEY;
-           }
-           // Check for VITE_ (Vite)
-           if (!apiKey && typeof import.meta !== 'undefined' && (import.meta as any).env) {
-              apiKey = (import.meta as any).env.VITE_API_KEY;
-           }
-        } catch (e) {
-           console.warn("Error checking fallback env vars", e);
-        }
-      }
-
-      if (!apiKey) {
-        throw new Error(
-          "API Key not found. If using .env.local, please ensure your variable is named correctly (e.g., REACT_APP_API_KEY, NEXT_PUBLIC_API_KEY, or VITE_API_KEY) and the server has been restarted."
-        );
-      }
 
       // 2. Get Microphone Access
       // Browsers only allow the microphone on https:// pages or localhost
@@ -177,37 +166,25 @@ export const useLiveSession = () => {
       updateVolume();
 
       // 4. Initialize GenAI Client
-      const ai = new GoogleGenAI({ apiKey, httpOptions: { apiVersion: 'v1beta' } });
-
-      const now = new Date();
-      const systemInstruction = `
-        You are Chronos, a dignified and knowledgeable Talking Clock and Historian.
-        Current Session Date: ${now.toLocaleDateString()}.
-        Current Session Time: ${now.toLocaleTimeString()}.
-        
-        Your instructions:
-        1. When the session starts, immediately greet the user warmly with the time.
-        2. Example greeting: "Greetings. The time is [Current Time]."
-        3. Immediately follow the time with a fascinating, brief historical event that happened on this day (${now.toLocaleString('default', { month: 'long' })} ${now.getDate()}) in history.
-        4. Engage in conversation if the user asks questions about the event or time.
-        5. If asked for the time again, recite it.
-        6. Keep your tone elegant, slightly archaic but accessible, like a museum curator.
-        7. Keep responses concise suitable for spoken conversation.
-      `;
+      // Get a short-lived session token from our server (the API key stays there).
+      // Fetched after the mic prompt because a token must be used within a minute.
+      const { token, model } = await fetchSessionToken(passcode);
+      // The token is used in place of an API key and needs the v1beta API
+      const ai = new GoogleGenAI({ apiKey: token, httpOptions: { apiVersion: 'v1beta' } });
 
       // 5. Connect to Live API
       const sessionPromise = ai.live.connect({
-        model: 'gemini-3.8-live',
+        model,
         config: {
           responseModalities: [Modality.AUDIO],
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Fenrir' } },
           },
-          systemInstruction: systemInstruction,
         },
         callbacks: {
           onopen: () => {
             setConnectionState('connected');
+            setPasscodeRequired(false);
             
             // Setup Mic Streaming
             if (!inputContextRef.current || !streamRef.current) return;
@@ -304,6 +281,7 @@ export const useLiveSession = () => {
 
     } catch (e: any) {
       console.error(e);
+      if (e instanceof PasscodeError) setPasscodeRequired(true);
       setConnectionState('error');
       setErrorMsg(e.message || "Failed to connect.");
       cleanup();
@@ -314,6 +292,7 @@ export const useLiveSession = () => {
     connectionState,
     volume,
     errorMsg,
+    passcodeRequired,
     connect,
     disconnect: cleanup
   };
